@@ -208,21 +208,33 @@ def build_parcel_lookup() -> dict:
 
 # ── FRAME HELPER ──────────────────────────────────────────────────────────────
 
-async def get_main_frame(page):
+async def get_main_frame(page, keywords=None):
     """Find the frame that contains the actual content."""
     await page.wait_for_timeout(2000)
+    if keywords is None:
+        keywords = ["Ellis County", "Property Search", "Record Type",
+                    "Instrument", "select", "BegDate", "Search"]
     for frame in page.frames:
         try:
             content = await frame.content()
-            if any(kw in content for kw in ["Email Address", "Ellis County",
-                                             "Property Search", "Record Type",
-                                             "Instrument"]):
+            if any(kw in content for kw in keywords):
                 log.info(f"  Found content frame: {frame.url}")
                 return frame
         except Exception:
             continue
-    log.info(f"  All frames: {[f.url for f in page.frames]}")
-    return page.main_frame
+    # Fall back — return largest frame by content length
+    best = None
+    best_len = 0
+    for frame in page.frames:
+        try:
+            content = await frame.content()
+            if len(content) > best_len:
+                best_len = len(content)
+                best = frame
+        except Exception:
+            continue
+    log.info(f"  Using largest frame: {best.url if best else 'none'}")
+    return best or page.main_frame
 
 
 # ── LOGIN ─────────────────────────────────────────────────────────────────────
@@ -232,16 +244,16 @@ async def lgs_login(page) -> bool:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
 
-        frame = await get_main_frame(page)
+        frame = await get_main_frame(page, keywords=["Email Address", "Password", "Login"])
         log.info(f"  Login frame URL: {frame.url}")
 
-        await frame.wait_for_selector('input[placeholder="Email Address"]',
-                                      timeout=20_000)
+        await frame.wait_for_selector('input[placeholder="Email Address"]', timeout=20_000)
         await frame.fill('input[placeholder="Email Address"]', LGS_USERNAME)
         await frame.fill('input[placeholder="Password"]', LGS_PASSWORD)
         await frame.click('input[value="Login"], button:has-text("Login")')
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(5000)
+        log.info(f"  After login frames: {[f.url for f in page.frames]}")
         log.info("  Logged in to LGS")
         return True
     except Exception as e:
