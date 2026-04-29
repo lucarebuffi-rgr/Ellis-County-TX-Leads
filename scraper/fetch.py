@@ -34,12 +34,11 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-BASE_URL      = "https://public.lgsonlinesolutions.com/ors.html"
-FRAME_URL     = "https://public.lgsonlinesolutions.com/ors_red_4_4.orslogo.html"
-LGS_USERNAME    = os.getenv("LGS_USERNAME", "")
-LGS_PASSWORD    = os.getenv("LGS_PASSWORD", "")
-GDRIVE_FILE_ID  = "1Y-bAKgEZ9jRRBPMhgUMbiyjZPbi9OMtP"
-LOOKBACK_DAYS   = int(os.getenv("LOOKBACK_DAYS", "14"))
+BASE_URL       = "https://public.lgsonlinesolutions.com/ors.html"
+LGS_USERNAME   = os.getenv("LGS_USERNAME", "")
+LGS_PASSWORD   = os.getenv("LGS_PASSWORD", "")
+GDRIVE_FILE_ID = "1Y-bAKgEZ9jRRBPMhgUMbiyjZPbi9OMtP"
+LOOKBACK_DAYS  = int(os.getenv("LOOKBACK_DAYS", "14"))
 
 DOC_TYPES = {
     "Lis Pendens"         : ("pre_foreclosure", "Lis Pendens"),
@@ -71,7 +70,7 @@ ENTITY_FILTERS = (
     "CITY OF ENNIS", "CITY OF WAXAHACHIE"
 )
 
-# ── Fixed-width column positions (same as Denton) ─────────────────────────────
+# ── Fixed-width column positions ──────────────────────────────────────────────
 ACCT_S,  ACCT_E  = 596,  608
 NAME_S,  NAME_E  = 608,  658
 ADDR_S,  ADDR_E  = 693,  743
@@ -176,7 +175,6 @@ def build_parcel_lookup() -> dict:
             owner_name = line[NAME_S:NAME_E].strip().upper()
             if not owner_name or is_entity(owner_name):
                 continue
-            acct       = line[ACCT_S:ACCT_E].strip().lstrip("0") or line[ACCT_S:ACCT_E].strip()
             mail_addr  = line[ADDR_S:ADDR_E].strip()
             mail_city  = line[CITY_S:CITY_E].strip()
             mail_state = line[STAT_S:STAT_E].strip() or "TX"
@@ -208,28 +206,39 @@ def build_parcel_lookup() -> dict:
     return lookup
 
 
-# ── PLAYWRIGHT SCRAPER ────────────────────────────────────────────────────────
+# ── FRAME HELPER ──────────────────────────────────────────────────────────────
+
+async def get_main_frame(page):
+    """Find the frame that contains the actual content."""
+    await page.wait_for_timeout(2000)
+    for frame in page.frames:
+        try:
+            content = await frame.content()
+            if any(kw in content for kw in ["Email Address", "Ellis County", "Property Search", "Record Type", "Instrument"]):
+                log.info(f"  Found content frame: {frame.url}")
+                return frame
+        except Exception:
+            continue
+    log.info(f"  All frames: {[f.url for f in page.frames]}")
+    return page.main_frame
+
+
+# ── LOGIN ─────────────────────────────────────────────────────────────────────
 
 async def lgs_login(page) -> bool:
     try:
-        # Navigate directly to the inner frame URL
-        await page.goto(FRAME_URL, timeout=60_000, wait_until="networkidle")
-        await page.wait_for_timeout(3000)
+        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
+        await page.wait_for_timeout(4000)
 
-        log.info(f"  Page URL: {page.url}")
-        log.info(f"  Page title: {await page.title()}")
+        frame = await get_main_frame(page)
+        log.info(f"  Login frame URL: {frame.url}")
 
-        # Wait for and fill email field
-        await page.wait_for_selector('input[placeholder="Email Address"]', timeout=30_000)
-        await page.fill('input[placeholder="Email Address"]', LGS_USERNAME)
-        await page.fill('input[placeholder="Password"]', LGS_PASSWORD)
-
-        # Click Login button
-        await page.click('input[value="Login"], button:has-text("Login")')
+        await frame.wait_for_selector('input[placeholder="Email Address"]', timeout=20_000)
+        await frame.fill('input[placeholder="Email Address"]', LGS_USERNAME)
+        await frame.fill('input[placeholder="Password"]', LGS_PASSWORD)
+        await frame.click('input[value="Login"], button:has-text("Login")')
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(3000)
-
-        log.info(f"  After login URL: {page.url}")
         log.info("  Logged in to LGS")
         return True
     except Exception as e:
@@ -237,94 +246,51 @@ async def lgs_login(page) -> bool:
         return False
 
 
+# ── SCRAPER ───────────────────────────────────────────────────────────────────
+
 async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
                            date_from: str, date_to: str) -> list:
     records = []
     try:
-        await page.goto(FRAME_URL, timeout=60_000, wait_until="networkidle")
+        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
 
-        # Select Ellis County Clerk using JavaScript
-        await page.evaluate("""
-            () => {
-                const sel = document.querySelector('select');
-                if (sel) {
-                    for (let opt of sel.options) {
-                        if (opt.text.includes('Ellis County Clerk')) {
-                            sel.value = opt.value;
-                            sel.dispatchEvent(new Event('change'));
-                            break;
-                        }
-                    }
-                }
-            }
-        """)
-        await page.wait_for_timeout(2000)
+        frame = await get_main_frame(page)
 
-        # Click Property button
-        await page.evaluate("""
-            () => {
-                const btns = document.querySelectorAll('input[type=button], button, input[type=submit]');
-                btns.forEach(btn => {
-                    if (btn.value === 'Property' || btn.textContent.trim() === 'Property') {
-                        btn.click();
-                    }
-                });
-            }
-        """)
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(2000)
-
-        # Fill search form using JavaScript
-        await page.evaluate(f"""
-            () => {{
-                const inputs = document.querySelectorAll('input[type=text], input:not([type])');
-                inputs.forEach(inp => {{
-                    const name = (inp.name || '').toLowerCase();
-                    const placeholder = (inp.placeholder || '').toLowerCase();
-                    if (name.includes('record') || placeholder.includes('record')) {{
-                        inp.value = '{rec_type}';
-                        inp.dispatchEvent(new Event('input'));
-                    }}
-                    if (name.includes('beg') || name.includes('start') || placeholder.includes('begin')) {{
-                        inp.value = '{date_from}';
-                        inp.dispatchEvent(new Event('input'));
-                    }}
-                    if (name.includes('end') || placeholder.includes('end')) {{
-                        inp.value = '{date_to}';
-                        inp.dispatchEvent(new Event('input'));
-                    }}
-                }});
-            }}
-        """)
+        # Select Ellis County Clerk
+        await frame.select_option('select', label="Ellis County Clerk")
         await page.wait_for_timeout(1000)
 
-        # Click Search button
-        await page.evaluate("""
-            () => {
-                const btns = document.querySelectorAll('input[type=submit], input[type=button], button');
-                btns.forEach(btn => {
-                    if (btn.value === 'Search' || btn.textContent.trim() === 'Search') {
-                        btn.click();
-                    }
-                });
-            }
-        """)
+        # Click Property button
+        await frame.click('input[value="Property"], button:has-text("Property")')
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(2000)
+
+        frame = await get_main_frame(page)
+
+        # Fill search form
+        await frame.fill('input[name="RecordType"]', rec_type)
+        await frame.fill('input[name="BegDate"]', date_from)
+        await frame.fill('input[name="EndDate"]', date_to)
+
+        # Submit
+        await frame.click('input[value="Search"]')
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(3000)
 
-        # Parse results table
-        rows = await page.query_selector_all("table tr")
+        frame = await get_main_frame(page)
+        rows  = await frame.query_selector_all("table tr")
+
         for row in rows:
             cells = await row.query_selector_all("td")
             if len(cells) < 5:
                 continue
-            texts = [await c.inner_text() for c in cells]
-            instrument   = texts[0].strip()
-            date_raw     = texts[1].strip()
-            name         = texts[2].strip()
-            name_type    = texts[3].strip()
-            legal        = texts[5].strip() if len(texts) > 5 else ""
+            texts      = [await c.inner_text() for c in cells]
+            instrument = texts[0].strip()
+            date_raw   = texts[1].strip()
+            name       = texts[2].strip()
+            name_type  = texts[3].strip()
+            legal      = texts[5].strip() if len(texts) > 5 else ""
 
             if not instrument or not name:
                 continue
@@ -503,16 +469,16 @@ def score_record(rec: dict) -> tuple:
     dtype  = rec.get("doc_type", "")
     amount = rec.get("amount") or 0
 
-    if dtype == "Lis Pendens":            flags.append("Lis pendens")
+    if dtype == "Lis Pendens":              flags.append("Lis pendens")
     if dtype in ("Federal Tax",
-                 "State Tax Lien"):       flags.append("Tax lien")
+                 "State Tax Lien"):         flags.append("Tax lien")
     if dtype in ("Judgment",
-                 "Abstract of Judgment"): flags.append("Judgment lien")
+                 "Abstract of Judgment"):   flags.append("Judgment lien")
     if dtype in ("Probate",
-                 "Affidavit Heirs"):      flags.append("Probate / estate")
-    if dtype == "Mechanic Lien":          flags.append("Mechanic lien")
-    if dtype in ("Lien", "Hospital Lien"):flags.append("Lien")
-    if dtype == "Divorce Decree":         flags.append("Divorce")
+                 "Affidavit Heirs"):        flags.append("Probate / estate")
+    if dtype == "Mechanic Lien":            flags.append("Mechanic lien")
+    if dtype in ("Lien", "Hospital Lien"): flags.append("Lien")
+    if dtype == "Divorce Decree":           flags.append("Divorce")
 
     try:
         filed = datetime.strptime(rec.get("filed", ""), "%Y-%m-%d")
@@ -536,7 +502,7 @@ def score_record(rec: dict) -> tuple:
 # ── OUTPUT ────────────────────────────────────────────────────────────────────
 
 def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
-    seen_docs = set()
+    seen_docs   = set()
     out_records = []
     for raw in raw_records:
         try:
