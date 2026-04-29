@@ -267,26 +267,76 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
     records = []
     try:
         await page.goto(BASE_URL, timeout=60_000)
-        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(3000)
 
-        # Select Ellis County Clerk
-        await page.select_option('select', label="Ellis County Clerk")
-        await page.wait_for_timeout(1000)
+        # Select Ellis County Clerk using JavaScript
+        await page.evaluate("""
+            () => {
+                const sel = document.querySelector('select');
+                if (sel) {
+                    for (let opt of sel.options) {
+                        if (opt.text.includes('Ellis County Clerk')) {
+                            sel.value = opt.value;
+                            sel.dispatchEvent(new Event('change'));
+                            break;
+                        }
+                    }
+                }
+            }
+        """)
+        await page.wait_for_timeout(2000)
 
         # Click Property button
-        await page.click('input[value="Property"], button:has-text("Property")')
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(1000)
-
-        # Fill search form
-        await page.fill('input[name="RecordType"]', rec_type)
-        await page.fill('input[name="BegDate"]', date_from)
-        await page.fill('input[name="EndDate"]', date_to)
-
-        # Submit
-        await page.click('input[value="Search"]')
+        await page.evaluate("""
+            () => {
+                const btns = document.querySelectorAll('input[type=button], button, input[type=submit]');
+                btns.forEach(btn => {
+                    if (btn.value === 'Property' || btn.textContent.trim() === 'Property') {
+                        btn.click();
+                    }
+                });
+            }
+        """)
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(2000)
+
+        # Fill search form using JavaScript
+        await page.evaluate(f"""
+            () => {{
+                const inputs = document.querySelectorAll('input[type=text], input:not([type])');
+                inputs.forEach(inp => {{
+                    const name = (inp.name || '').toLowerCase();
+                    const placeholder = (inp.placeholder || '').toLowerCase();
+                    if (name.includes('record') || placeholder.includes('record')) {{
+                        inp.value = '{rec_type}';
+                        inp.dispatchEvent(new Event('input'));
+                    }}
+                    if (name.includes('beg') || name.includes('start') || placeholder.includes('begin')) {{
+                        inp.value = '{date_from}';
+                        inp.dispatchEvent(new Event('input'));
+                    }}
+                    if (name.includes('end') || placeholder.includes('end')) {{
+                        inp.value = '{date_to}';
+                        inp.dispatchEvent(new Event('input'));
+                    }}
+                }});
+            }}
+        """)
+        await page.wait_for_timeout(1000)
+
+        # Click Search button
+        await page.evaluate("""
+            () => {
+                const btns = document.querySelectorAll('input[type=submit], input[type=button], button');
+                btns.forEach(btn => {
+                    if (btn.value === 'Search' || btn.textContent.trim() === 'Search') {
+                        btn.click();
+                    }
+                });
+            }
+        """)
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(3000)
 
         # Parse results table
         rows = await page.query_selector_all("table tr")
@@ -299,7 +349,6 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
             date_raw     = texts[1].strip()
             name         = texts[2].strip()
             name_type    = texts[3].strip()
-            rec_type_val = texts[4].strip()
             legal        = texts[5].strip() if len(texts) > 5 else ""
 
             if not instrument or not name:
