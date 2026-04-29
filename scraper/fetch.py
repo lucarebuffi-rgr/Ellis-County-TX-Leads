@@ -211,16 +211,50 @@ def build_parcel_lookup() -> dict:
 
 async def lgs_login(page) -> bool:
     try:
-        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
-        await page.wait_for_timeout(3000)
+        await page.goto(BASE_URL, timeout=60_000)
+        await page.wait_for_timeout(5000)
 
-        # Use placeholder text to find fields
-        await page.wait_for_selector('input[placeholder="Email Address"]', timeout=30_000)
-        await page.fill('input[placeholder="Email Address"]', LGS_USERNAME)
-        await page.fill('input[placeholder="Password"]', LGS_PASSWORD)
-        await page.click('input[value="Login"], button:has-text("Login")')
+        # Check what's on the page
+        content = await page.content()
+        log.info(f"  Page title: {await page.title()}")
+        log.info(f"  Page URL: {page.url}")
+        log.info(f"  Has Email input: {'Email Address' in content}")
+        log.info(f"  Has password: {'Password' in content}")
+
+        # Fill using JavaScript directly
+        await page.evaluate(f"""
+            () => {{
+                const inputs = document.querySelectorAll('input');
+                inputs.forEach(inp => {{
+                    if(inp.placeholder === 'Email Address' || inp.type === 'email') {{
+                        inp.value = '{LGS_USERNAME}';
+                        inp.dispatchEvent(new Event('input'));
+                    }}
+                    if(inp.placeholder === 'Password' || inp.type === 'password') {{
+                        inp.value = '{LGS_PASSWORD}';
+                        inp.dispatchEvent(new Event('input'));
+                    }}
+                }});
+            }}
+        """)
+
+        await page.wait_for_timeout(1000)
+
+        # Click login button
+        await page.evaluate("""
+            () => {
+                const btns = document.querySelectorAll('input[type=submit], button, input[type=button]');
+                btns.forEach(btn => {
+                    if(btn.value === 'Login' || btn.textContent.trim() === 'Login') {
+                        btn.click();
+                    }
+                });
+            }
+        """)
+
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
+        log.info(f"  After login URL: {page.url}")
         log.info("  Logged in to LGS")
         return True
     except Exception as e:
