@@ -278,28 +278,84 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
 
-        frame = await get_search_frame(page)
+        # Find frame with the select dropdown
+        search_frame = None
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "<select" in content and len(content) > 500:
+                    search_frame = frame
+                    log.info(f"  Found select frame: {frame.url}")
+                    break
+            except Exception:
+                continue
 
-        await frame.select_option('select', label="Ellis County Clerk")
+        if not search_frame:
+            log.warning("  Could not find search frame")
+            return records
+
+        # Select Ellis County Clerk
+        await search_frame.select_option('select', label="Ellis County Clerk")
         await page.wait_for_timeout(1000)
 
-        await frame.click('input[value="Property"], button:has-text("Property")')
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(2000)
-
-        frame = await get_search_frame(page)
-
-        await frame.fill('input[name="RecordType"]', rec_type)
-        await frame.fill('input[name="BegDate"]', date_from)
-        await frame.fill('input[name="EndDate"]', date_to)
-
-        await frame.click('input[value="Search"]')
-        await page.wait_for_load_state("domcontentloaded")
+        # Click Property button
+        await search_frame.click('input[value="Property"], button:has-text("Property")')
         await page.wait_for_timeout(3000)
 
-        frame = await get_search_frame(page)
-        rows  = await frame.query_selector_all("table tr")
+        # Handle disclaimer popup — click Accept
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "Accept" in content and "Decline" in content:
+                    log.info(f"  Found disclaimer in frame: {frame.url}")
+                    await frame.click('input[value="Accept"], button:has-text("Accept")')
+                    await page.wait_for_timeout(2000)
+                    break
+            except Exception:
+                continue
 
+        # Find the search form frame after disclaimer
+        search_frame = None
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "Record Type" in content or "Beginning Date" in content:
+                    search_frame = frame
+                    log.info(f"  Found search form frame: {frame.url}")
+                    break
+            except Exception:
+                continue
+
+        if not search_frame:
+            log.warning("  Could not find search form after disclaimer")
+            return records
+
+        # Fill search form with correct field names
+        await search_frame.fill('input[name="RecordType"], input[name="recordtype"]', rec_type)
+        await search_frame.fill('input[name="BegDate"], input[name="begdate"], input[name="BeginningDate"]', date_from)
+        await search_frame.fill('input[name="EndDate"], input[name="enddate"], input[name="EndingDate"]', date_to)
+
+        # Click Search
+        await search_frame.click('input[value="Search"], button:has-text("Search")')
+        await page.wait_for_timeout(3000)
+
+        # Find results frame
+        results_frame = None
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "Instrument #" in content or "Instrument#" in content or "GRANTOR" in content or "GRANTEE" in content:
+                    results_frame = frame
+                    log.info(f"  Found results frame: {frame.url}")
+                    break
+            except Exception:
+                continue
+
+        if not results_frame:
+            log.info(f"  {rec_type}: 0 rows (no results frame)")
+            return records
+
+        rows = await results_frame.query_selector_all("table tr")
         for row in rows:
             cells = await row.query_selector_all("td")
             if len(cells) < 5:
