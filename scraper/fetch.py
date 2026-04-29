@@ -14,6 +14,7 @@ import os
 import re
 import traceback
 import zipfile
+import httpx
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -206,59 +207,82 @@ def build_parcel_lookup() -> dict:
     return lookup
 
 
-# ── FRAME HELPER ──────────────────────────────────────────────────────────────
-
-async def get_main_frame(page, keywords=None):
-    """Find the frame that contains the actual content."""
-    await page.wait_for_timeout(2000)
-    if keywords is None:
-        keywords = ["Ellis County", "Property Search", "Record Type",
-                    "Instrument", "select", "BegDate", "Search"]
-    for frame in page.frames:
-        try:
-            content = await frame.content()
-            if any(kw in content for kw in keywords):
-                log.info(f"  Found content frame: {frame.url}")
-                return frame
-        except Exception:
-            continue
-    # Fall back — return largest frame by content length
-    best = None
-    best_len = 0
-    for frame in page.frames:
-        try:
-            content = await frame.content()
-            if len(content) > best_len:
-                best_len = len(content)
-                best = frame
-        except Exception:
-            continue
-    log.info(f"  Using largest frame: {best.url if best else 'none'}")
-    return best or page.main_frame
-
-
 # ── LOGIN ─────────────────────────────────────────────────────────────────────
 
 async def lgs_login(page) -> bool:
     try:
+        log.info("  Attempting HTTP login ...")
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            # Get the login page first
+            r = await client.get(BASE_URL, timeout=30)
+            log.info(f"  Login page status: {r.status_code}")
+
+            # Try posting to common login endpoints
+            for login_url in [
+                "https://public.lgsonlinesolutions.com/ors_UserLogin.html",
+                "https://public.lgsonlinesolutions.com/login.html",
+                "https://public.lgsonlinesolutions.com/ors_red_4_4.orslogo.html",
+            ]:
+                try:
+                    r2 = await client.post(login_url, data={
+                        "email":          LGS_USERNAME,
+                        "password":       LGS_PASSWORD,
+                        "Email Address":  LGS_USERNAME,
+                        "Password":       LGS_PASSWORD,
+                    }, timeout=30)
+                    log.info(f"  POST {login_url}: {r2.status_code}")
+                except Exception as ex:
+                    log.info(f"  POST {login_url} failed: {ex}")
+
+            # Inject cookies into Playwright
+            cookies = dict(client.cookies)
+            log.info(f"  HTTP cookies: {list(cookies.keys())}")
+            for name, value in cookies.items():
+                await page.context.add_cookies([{
+                    "name":   name,
+                    "value":  value,
+                    "domain": "public.lgsonlinesolutions.com",
+                    "path":   "/",
+                }])
+
+        # Load page with injected cookies
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
 
-        frame = await get_main_frame(page, keywords=["Email Address", "Password", "Login"])
-        log.info(f"  Login frame URL: {frame.url}")
+        # Log all frames so we can see what's available
+        for f in page.frames:
+            try:
+                content = await f.content()
+                log.info(
+                    f"  Frame {f.url}: {len(content)} chars "
+                    f"has_select={'<select' in content} "
+                    f"has_ellis={'Ellis' in content} "
+                    f"has_email={'Email Address' in content} "
+                    f"has_search={'RecordType' in content}"
+                )
+            except Exception:
+                pass
 
-        await frame.wait_for_selector('input[placeholder="Email Address"]', timeout=20_000)
-        await frame.fill('input[placeholder="Email Address"]', LGS_USERNAME)
-        await frame.fill('input[placeholder="Password"]', LGS_PASSWORD)
-        await frame.click('input[value="Login"], button:has-text("Login")')
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(5000)
-        log.info(f"  After login frames: {[f.url for f in page.frames]}")
-        log.info("  Logged in to LGS")
+        log.info("  Login attempt complete")
         return True
     except Exception as e:
         log.error(f"  Login failed: {e}")
         return False
+
+
+# ── FRAME HELPER ──────────────────────────────────────────────────────────────
+
+async def get_search_frame(page):
+    """Find the frame that contains the search form."""
+    for frame in page.frames:
+        try:
+            content = await frame.content()
+            if "Ellis County" in content or "RecordType" in content or "<select" in content:
+                log.info(f"  Using search frame: {frame.url}")
+                return frame
+        except Exception:
+            continue
+    return page.main_frame
 
 
 # ── SCRAPER ───────────────────────────────────────────────────────────────────
@@ -270,7 +294,7 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
 
-        frame = await get_main_frame(page)
+        frame = await get_search_frame(page)
 
         await frame.select_option('select', label="Ellis County Clerk")
         await page.wait_for_timeout(1000)
@@ -279,7 +303,7 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(2000)
 
-        frame = await get_main_frame(page)
+        frame = await get_search_frame(page)
 
         await frame.fill('input[name="RecordType"]', rec_type)
         await frame.fill('input[name="BegDate"]', date_from)
@@ -289,7 +313,7 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(3000)
 
-        frame = await get_main_frame(page)
+        frame = await get_search_frame(page)
         rows  = await frame.query_selector_all("table tr")
 
         for row in rows:
