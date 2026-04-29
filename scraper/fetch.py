@@ -214,16 +214,11 @@ async def lgs_login(page) -> bool:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
 
-        # Try multiple selectors for username field
-        username_sel = 'input[name="username"], input[name="user"], input[type="text"]:first-of-type'
-        await page.wait_for_selector(username_sel, timeout=30_000)
-        await page.fill(username_sel, LGS_USERNAME)
-
-        password_sel = 'input[name="password"], input[type="password"]'
-        await page.wait_for_selector(password_sel, timeout=10_000)
-        await page.fill(password_sel, LGS_PASSWORD)
-
-        await page.click('input[type="submit"], button[type="submit"], input[value="Login"], input[value="Log In"]')
+        # Use placeholder text to find fields
+        await page.wait_for_selector('input[placeholder="Email Address"]', timeout=30_000)
+        await page.fill('input[placeholder="Email Address"]', LGS_USERNAME)
+        await page.fill('input[placeholder="Password"]', LGS_PASSWORD)
+        await page.click('input[value="Login"], button:has-text("Login")')
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(2000)
         log.info("  Logged in to LGS")
