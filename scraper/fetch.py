@@ -214,7 +214,9 @@ async def get_main_frame(page):
     for frame in page.frames:
         try:
             content = await frame.content()
-            if any(kw in content for kw in ["Email Address", "Ellis County", "Property Search", "Record Type", "Instrument"]):
+            if any(kw in content for kw in ["Email Address", "Ellis County",
+                                             "Property Search", "Record Type",
+                                             "Instrument"]):
                 log.info(f"  Found content frame: {frame.url}")
                 return frame
         except Exception:
@@ -233,7 +235,8 @@ async def lgs_login(page) -> bool:
         frame = await get_main_frame(page)
         log.info(f"  Login frame URL: {frame.url}")
 
-        await frame.wait_for_selector('input[placeholder="Email Address"]', timeout=20_000)
+        await frame.wait_for_selector('input[placeholder="Email Address"]',
+                                      timeout=20_000)
         await frame.fill('input[placeholder="Email Address"]', LGS_USERNAME)
         await frame.fill('input[placeholder="Password"]', LGS_PASSWORD)
         await frame.click('input[value="Login"], button:has-text("Login")')
@@ -257,23 +260,19 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
 
         frame = await get_main_frame(page)
 
-        # Select Ellis County Clerk
         await frame.select_option('select', label="Ellis County Clerk")
         await page.wait_for_timeout(1000)
 
-        # Click Property button
         await frame.click('input[value="Property"], button:has-text("Property")')
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(2000)
 
         frame = await get_main_frame(page)
 
-        # Fill search form
         await frame.fill('input[name="RecordType"]', rec_type)
         await frame.fill('input[name="BegDate"]', date_from)
         await frame.fill('input[name="EndDate"]', date_to)
 
-        # Submit
         await frame.click('input[value="Search"]')
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(3000)
@@ -361,15 +360,24 @@ async def scrape_all(date_from: str, date_to: str) -> list:
 
 def generate_demo_records(date_from: str, date_to: str) -> list:
     samples = [
-        ("Lis Pendens",          "pre_foreclosure", "Lis Pendens",          "SMITH ROBERT",    "ROCKET MORTGAGE",  0),
-        ("Judgment",             "judgment",        "Judgment",             "JONES MARY B",    "CAPITAL ONE",  87500),
-        ("Federal Tax",          "lien",            "Federal Tax Lien",     "WILLIAMS DAVID",  "IRS",          45200),
-        ("Abstract of Judgment", "judgment",        "Abstract of Judgment", "JOHNSON PAT",     "CITIBANK",     18700),
-        ("Mechanic Lien",        "lien",            "Mechanics Lien",       "BROWN MICHAEL",   "ACME CONTR",   22000),
-        ("Probate",              "probate",         "Probate",              "DAVIS JAMES EST", "ELLIS PROBATE",    0),
-        ("State Tax Lien",       "lien",            "State Tax Lien",       "HENDERSON BOB",   "STATE OF TX",   9800),
-        ("Lien",                 "lien",            "Lien",                 "RODRIGUEZ JUAN",  "WAXAHACHIE",    5000),
-        ("Affidavit Heirs",      "probate",         "Affidavit of Heirship","GARCIA CARLOS",   "GARCIA MARIA",     0),
+        ("Lis Pendens",          "pre_foreclosure", "Lis Pendens",
+         "SMITH ROBERT",    "ROCKET MORTGAGE",  0),
+        ("Judgment",             "judgment",        "Judgment",
+         "JONES MARY B",    "CAPITAL ONE",  87500),
+        ("Federal Tax",          "lien",            "Federal Tax Lien",
+         "WILLIAMS DAVID",  "IRS",          45200),
+        ("Abstract of Judgment", "judgment",        "Abstract of Judgment",
+         "JOHNSON PAT",     "CITIBANK",     18700),
+        ("Mechanic Lien",        "lien",            "Mechanics Lien",
+         "BROWN MICHAEL",   "ACME CONTR",   22000),
+        ("Probate",              "probate",         "Probate",
+         "DAVIS JAMES EST", "ELLIS PROBATE",    0),
+        ("State Tax Lien",       "lien",            "State Tax Lien",
+         "HENDERSON BOB",   "STATE OF TX",   9800),
+        ("Lien",                 "lien",            "Lien",
+         "RODRIGUEZ JUAN",  "WAXAHACHIE",    5000),
+        ("Affidavit Heirs",      "probate",         "Affidavit of Heirship",
+         "GARCIA CARLOS",   "GARCIA MARIA",     0),
     ]
     base = datetime.strptime(date_from, "%m/%d/%Y")
     recs = []
@@ -469,16 +477,16 @@ def score_record(rec: dict) -> tuple:
     dtype  = rec.get("doc_type", "")
     amount = rec.get("amount") or 0
 
-    if dtype == "Lis Pendens":              flags.append("Lis pendens")
+    if dtype == "Lis Pendens":               flags.append("Lis pendens")
     if dtype in ("Federal Tax",
-                 "State Tax Lien"):         flags.append("Tax lien")
+                 "State Tax Lien"):          flags.append("Tax lien")
     if dtype in ("Judgment",
-                 "Abstract of Judgment"):   flags.append("Judgment lien")
+                 "Abstract of Judgment"):    flags.append("Judgment lien")
     if dtype in ("Probate",
-                 "Affidavit Heirs"):        flags.append("Probate / estate")
-    if dtype == "Mechanic Lien":            flags.append("Mechanic lien")
-    if dtype in ("Lien", "Hospital Lien"): flags.append("Lien")
-    if dtype == "Divorce Decree":           flags.append("Divorce")
+                 "Affidavit Heirs"):         flags.append("Probate / estate")
+    if dtype == "Mechanic Lien":             flags.append("Mechanic lien")
+    if dtype in ("Lien", "Hospital Lien"):  flags.append("Lien")
+    if dtype == "Divorce Decree":            flags.append("Divorce")
 
     try:
         filed = datetime.strptime(rec.get("filed", ""), "%Y-%m-%d")
