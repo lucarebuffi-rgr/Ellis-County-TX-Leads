@@ -249,19 +249,20 @@ async def lgs_login(page) -> bool:
 async def get_search_frame(page):
     """Find the frame that contains the search form."""
     await page.wait_for_timeout(1000)
+    # Target the cgi-bin/webshell.asp frame which has the search form
     for frame in page.frames:
         try:
-            if "orslogo" in frame.url or "ors_red" in frame.url:
+            if "webshell" in frame.url or "cgi-bin" in frame.url:
                 log.info(f"  Using search frame: {frame.url}")
                 return frame
         except Exception:
             continue
-    # Fallback — find by content
+    # Fallback — find by select element
     for frame in page.frames:
         try:
             content = await frame.content()
-            if "Ellis" in content or "select" in content.lower():
-                log.info(f"  Fallback frame: {frame.url}")
+            if "<select" in content:
+                log.info(f"  Fallback search frame: {frame.url}")
                 return frame
         except Exception:
             continue
