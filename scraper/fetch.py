@@ -211,12 +211,21 @@ def build_parcel_lookup() -> dict:
 
 async def lgs_login(page) -> bool:
     try:
-        await page.goto(BASE_URL, timeout=60_000)
-        await page.wait_for_load_state("domcontentloaded")
-        await page.fill('input[type="text"]', LGS_USERNAME)
-        await page.fill('input[type="password"]', LGS_PASSWORD)
-        await page.click('input[type="submit"], button[type="submit"]')
-        await page.wait_for_load_state("domcontentloaded")
+        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
+        await page.wait_for_timeout(3000)
+
+        # Try multiple selectors for username field
+        username_sel = 'input[name="username"], input[name="user"], input[type="text"]:first-of-type'
+        await page.wait_for_selector(username_sel, timeout=30_000)
+        await page.fill(username_sel, LGS_USERNAME)
+
+        password_sel = 'input[name="password"], input[type="password"]'
+        await page.wait_for_selector(password_sel, timeout=10_000)
+        await page.fill(password_sel, LGS_PASSWORD)
+
+        await page.click('input[type="submit"], button[type="submit"], input[value="Login"], input[value="Log In"]')
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(2000)
         log.info("  Logged in to LGS")
         return True
     except Exception as e:
