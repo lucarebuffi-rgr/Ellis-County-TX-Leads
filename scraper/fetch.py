@@ -214,74 +214,31 @@ async def lgs_login(page) -> bool:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
 
-        # Find the login frame - it's ors_UserLogin.html
-        login_frame = None
+        # Try Guest Login instead — no credentials needed
         for frame in page.frames:
-            if "UserLogin" in frame.url or "ors_red" in frame.url:
-                login_frame = frame
-                break
-
-        if not login_frame:
-            # Try largest frame
-            for frame in page.frames:
-                try:
-                    content = await frame.content()
-                    if "Email Address" in content or "Password" in content:
-                        login_frame = frame
-                        break
-                except Exception:
-                    continue
-
-        if not login_frame:
-            log.error("Could not find login frame")
-            return False
-
-        log.info(f"  Login frame: {login_frame.url}")
-
-        # Fill form directly via JavaScript in that frame
-        await login_frame.evaluate(f"""
-            () => {{
-                const inputs = document.querySelectorAll('input');
-                inputs.forEach(inp => {{
-                    if (inp.placeholder && inp.placeholder.includes('Email')) {{
-                        inp.value = '{LGS_USERNAME}';
-                        inp.dispatchEvent(new Event('change'));
-                        inp.dispatchEvent(new Event('input'));
-                    }}
-                    if (inp.placeholder && inp.placeholder.includes('Password')) {{
-                        inp.value = '{LGS_PASSWORD}';
-                        inp.dispatchEvent(new Event('change'));
-                        inp.dispatchEvent(new Event('input'));
-                    }}
-                }});
-            }}
-        """)
-        await page.wait_for_timeout(1000)
-
-        # Click login button
-        await login_frame.evaluate("""
-            () => {
-                const btns = document.querySelectorAll('input, button');
-                btns.forEach(btn => {
-                    if ((btn.value || btn.textContent || '').trim() === 'Login') {
-                        btn.click();
-                    }
-                });
-            }
-        """)
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(5000)
-
-        # Log frames after login
-        for f in page.frames:
             try:
-                content = await f.content()
-                log.info(f"  Post-login frame {f.url}: {len(content)} chars")
-            except Exception:
-                pass
+                content = await frame.content()
+                if "Guest Login" in content or "Guest" in content:
+                    log.info(f"  Found Guest Login in frame: {frame.url}")
+                    await frame.click('input[value="Guest Login"], button:has-text("Guest Login")')
+                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_timeout(3000)
+                    log.info("  Guest login complete")
 
-        log.info("  Login complete")
-        return True
+                    # Log post-login frames
+                    for f in page.frames:
+                        try:
+                            c = await f.content()
+                            log.info(f"  Frame {f.url}: {len(c)} chars has_select={'<select' in c} has_ellis={'Ellis' in c}")
+                        except Exception:
+                            pass
+                    return True
+            except Exception as ex:
+                log.info(f"  Frame guest login attempt: {ex}")
+                continue
+
+        log.error("Could not find Guest Login button")
+        return False
     except Exception as e:
         log.error(f"  Login failed: {e}")
         return False
