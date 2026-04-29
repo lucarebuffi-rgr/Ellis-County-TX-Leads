@@ -211,59 +211,76 @@ def build_parcel_lookup() -> dict:
 
 async def lgs_login(page) -> bool:
     try:
-        log.info("  Attempting HTTP login ...")
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            # Get the login page first
-            r = await client.get(BASE_URL, timeout=30)
-            log.info(f"  Login page status: {r.status_code}")
-
-            # Try posting to common login endpoints
-            for login_url in [
-                "https://public.lgsonlinesolutions.com/ors_UserLogin.html",
-                "https://public.lgsonlinesolutions.com/login.html",
-                "https://public.lgsonlinesolutions.com/ors_red_4_4.orslogo.html",
-            ]:
-                try:
-                    r2 = await client.post(login_url, data={
-                        "email":          LGS_USERNAME,
-                        "password":       LGS_PASSWORD,
-                        "Email Address":  LGS_USERNAME,
-                        "Password":       LGS_PASSWORD,
-                    }, timeout=30)
-                    log.info(f"  POST {login_url}: {r2.status_code}")
-                except Exception as ex:
-                    log.info(f"  POST {login_url} failed: {ex}")
-
-            # Inject cookies into Playwright
-            cookies = dict(client.cookies)
-            log.info(f"  HTTP cookies: {list(cookies.keys())}")
-            for name, value in cookies.items():
-                await page.context.add_cookies([{
-                    "name":   name,
-                    "value":  value,
-                    "domain": "public.lgsonlinesolutions.com",
-                    "path":   "/",
-                }])
-
-        # Load page with injected cookies
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
 
-        # Log all frames so we can see what's available
+        # Find the login frame - it's ors_UserLogin.html
+        login_frame = None
+        for frame in page.frames:
+            if "UserLogin" in frame.url or "ors_red" in frame.url:
+                login_frame = frame
+                break
+
+        if not login_frame:
+            # Try largest frame
+            for frame in page.frames:
+                try:
+                    content = await frame.content()
+                    if "Email Address" in content or "Password" in content:
+                        login_frame = frame
+                        break
+                except Exception:
+                    continue
+
+        if not login_frame:
+            log.error("Could not find login frame")
+            return False
+
+        log.info(f"  Login frame: {login_frame.url}")
+
+        # Fill form directly via JavaScript in that frame
+        await login_frame.evaluate(f"""
+            () => {{
+                const inputs = document.querySelectorAll('input');
+                inputs.forEach(inp => {{
+                    if (inp.placeholder && inp.placeholder.includes('Email')) {{
+                        inp.value = '{LGS_USERNAME}';
+                        inp.dispatchEvent(new Event('change'));
+                        inp.dispatchEvent(new Event('input'));
+                    }}
+                    if (inp.placeholder && inp.placeholder.includes('Password')) {{
+                        inp.value = '{LGS_PASSWORD}';
+                        inp.dispatchEvent(new Event('change'));
+                        inp.dispatchEvent(new Event('input'));
+                    }}
+                }});
+            }}
+        """)
+        await page.wait_for_timeout(1000)
+
+        # Click login button
+        await login_frame.evaluate("""
+            () => {
+                const btns = document.querySelectorAll('input, button');
+                btns.forEach(btn => {
+                    if ((btn.value || btn.textContent || '').trim() === 'Login') {
+                        btn.click();
+                    }
+                });
+            }
+        """)
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(5000)
+
+        # Log frames after login
         for f in page.frames:
             try:
                 content = await f.content()
-                log.info(
-                    f"  Frame {f.url}: {len(content)} chars "
-                    f"has_select={'<select' in content} "
-                    f"has_ellis={'Ellis' in content} "
-                    f"has_email={'Email Address' in content} "
-                    f"has_search={'RecordType' in content}"
-                )
+                log.info(f"  Post-login frame {f.url}: {len(content)} chars")
             except Exception:
                 pass
 
-        log.info("  Login attempt complete")
+        log.info("  Login complete")
         return True
     except Exception as e:
         log.error(f"  Login failed: {e}")
@@ -274,11 +291,20 @@ async def lgs_login(page) -> bool:
 
 async def get_search_frame(page):
     """Find the frame that contains the search form."""
+    await page.wait_for_timeout(1000)
+    for frame in page.frames:
+        try:
+            if "orslogo" in frame.url or "ors_red" in frame.url:
+                log.info(f"  Using search frame: {frame.url}")
+                return frame
+        except Exception:
+            continue
+    # Fallback — find by content
     for frame in page.frames:
         try:
             content = await frame.content()
-            if "Ellis County" in content or "RecordType" in content or "<select" in content:
-                log.info(f"  Using search frame: {frame.url}")
+            if "Ellis" in content or "select" in content.lower():
+                log.info(f"  Fallback frame: {frame.url}")
                 return frame
         except Exception:
             continue
