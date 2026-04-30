@@ -236,19 +236,24 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
                           date_from: str, date_to: str) -> list:
     records = []
     try:
-        # Try navigating directly to the search CGI
+        # Log current cookies
+        cookies = await page.context.cookies()
+        log.info(f"  Cookies: {[c['name'] for c in cookies]}")
+
+        # Navigate to CGI with session cookies active
         search_url = "https://public.lgsonlinesolutions.com/cgi-bin/webshell.asp"
         await page.goto(search_url, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
         content = await page.content()
-        log.info(f"  Direct CGI content: {len(content)} chars snippet={content[:300]}")
+        log.info(f"  CGI content: {len(content)} chars snippet={content[:500]}")
 
-        # Also try with parameters
-        search_url2 = "https://public.lgsonlinesolutions.com/cgi-bin/webshell.asp?office=Ellis+County+Clerk&filetype=Property"
-        await page.goto(search_url2, timeout=60_000, wait_until="networkidle")
-        await page.wait_for_timeout(3000)
-        content2 = await page.content()
-        log.info(f"  CGI with params: {len(content2)} chars snippet={content2[:300]}")
+        # Log all frames
+        for frame in page.frames:
+            try:
+                fc = await frame.content()
+                log.info(f"  Frame {frame.url}: {len(fc)} chars has_select={'<select' in fc.lower()} has_record={'Record' in fc}")
+            except Exception:
+                pass
 
         log.info(f"  {rec_type}: 0 rows (debug)")
     except Exception as e:
@@ -505,7 +510,7 @@ def export_ghl_csv(data: dict):
             "First Name":             parts[0] if parts else "",
             "Last Name":              " ".join(parts[1:]) if len(parts) > 1 else "",
             "Mailing Address":        r.get("mail_address", ""),
-            "Milling City":           r.get("mail_city", ""),
+            "Mailing City":           r.get("mail_city", ""),
             "Mailing State":          r.get("mail_state", "TX"),
             "Mailing Zip":            r.get("mail_zip", ""),
             "Property Address":       r.get("prop_address", ""),
