@@ -200,22 +200,54 @@ async def lgs_login(page) -> bool:
     try:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
+
+        # Find Guest Login button across all frames
         for frame in page.frames:
             try:
                 content = await frame.content()
                 if "Guest Login" in content:
-                    log.info(f"  Found Guest Login in frame: {frame.url}")
-                    await frame.click('input[value="Guest Login"], button:has-text("Guest Login")')
+                    log.info(f"  Found Guest Login in: {frame.url}")
+                    # Try multiple click methods
+                    try:
+                        await frame.get_by_text("Guest Login").click()
+                        log.info("  Clicked via get_by_text")
+                    except Exception:
+                        try:
+                            await frame.click('input[value="Guest Login"]')
+                            log.info("  Clicked via input value")
+                        except Exception:
+                            try:
+                                await frame.evaluate("""
+                                    () => {
+                                        const els = document.querySelectorAll('input, button, a');
+                                        for (const el of els) {
+                                            if ((el.value || el.textContent || '').includes('Guest Login')) {
+                                                el.click();
+                                                return true;
+                                            }
+                                        }
+                                        return false;
+                                    }
+                                """)
+                                log.info("  Clicked via JavaScript")
+                            except Exception as ex3:
+                                log.info(f"  All click methods failed: {ex3}")
+
                     await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(3000)
-                    log.info("  Guest login complete")
+                    await page.wait_for_timeout(4000)
+
+                    # Take screenshot after login attempt
+                    await page.screenshot(path="dashboard/debug_screenshot.png", full_page=True)
+                    log.info(f"  After login URL: {page.url}")
+                    log.info("  Login attempt done")
                     return True
             except Exception:
                 continue
-        log.error("Could not find Guest Login button")
+
+        log.error("Guest Login not found in any frame")
         return False
     except Exception as e:
-        log.error(f"  Login failed: {e}")
+        log.error(f"Login failed: {e}")
         return False
 
 
