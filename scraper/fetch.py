@@ -236,24 +236,46 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
                           date_from: str, date_to: str) -> list:
     records = []
     try:
-        # Log current cookies
-        cookies = await page.context.cookies()
-        log.info(f"  Cookies: {[c['name'] for c in cookies]}")
-
-        # Navigate to CGI with session cookies active
-        search_url = "https://public.lgsonlinesolutions.com/cgi-bin/webshell.asp"
-        await page.goto(search_url, timeout=60_000, wait_until="networkidle")
+        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
-        content = await page.content()
-        log.info(f"  CGI content: {len(content)} chars snippet={content[:500]}")
 
-        # Log all frames
-        for frame in page.frames:
-            try:
-                fc = await frame.content()
-                log.info(f"  Frame {frame.url}: {len(fc)} chars has_select={'<select' in fc.lower()} has_record={'Record' in fc}")
-            except Exception:
-                pass
+        # Use frame_locator to target the webshell frame
+        # The frameset has nested frames - try to find webshell.asp
+        webshell = page.frame_locator('frame[src*="webshell"]')
+
+        # If not found by src, try by name or position
+        # First log all frame sources
+        frames_html = await page.evaluate("""
+            () => {
+                const frames = document.querySelectorAll('frame, iframe');
+                return Array.from(frames).map(f => ({
+                    src: f.src,
+                    name: f.name,
+                    id: f.id
+                }));
+            }
+        """)
+        log.info(f"  Frames in DOM: {frames_html}")
+
+        # Also check nested framesets
+        nested = await page.evaluate("""
+            () => {
+                const results = [];
+                function getFrames(doc, depth) {
+                    if (depth > 5) return;
+                    const frames = doc.querySelectorAll('frame, iframe');
+                    frames.forEach(f => {
+                        results.push({src: f.src, name: f.name, depth: depth});
+                        try {
+                            if (f.contentDocument) getFrames(f.contentDocument, depth+1);
+                        } catch(e) {}
+                    });
+                }
+                getFrames(document, 0);
+                return results;
+            }
+        """)
+        log.info(f"  Nested frames: {nested}")
 
         log.info(f"  {rec_type}: 0 rows (debug)")
     except Exception as e:
