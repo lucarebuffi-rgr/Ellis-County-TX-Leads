@@ -275,60 +275,70 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
                            date_from: str, date_to: str) -> list:
     records = []
     try:
+        # Navigate to main page
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(5000)
 
-        # Find frame with the select dropdown
-        search_frame = None
+        # Log ALL frames with full content snippet
         for frame in page.frames:
             try:
                 content = await frame.content()
-                if "<select" in content and len(content) > 500:
-                    search_frame = frame
-                    log.info(f"  Found select frame: {frame.url}")
-                    break
+                # Look for select tag
+                if "<select" in content.lower():
+                    log.info(f"  SELECT found in frame: {frame.url}")
+                    log.info(f"  Content snippet: {content[:500]}")
             except Exception:
-                continue
+                pass
 
-        if not search_frame:
-            log.warning("  Could not find search frame")
-            return records
+        # Try clicking on the page directly using coordinates or text
+        # First try to find select on main page
+        try:
+            await page.wait_for_selector('select', timeout=5000)
+            log.info("  Found select on main page!")
+            await page.select_option('select', label="Ellis County Clerk")
+        except Exception:
+            log.warning("  No select on main page")
 
-        # Select Ellis County Clerk
-        await search_frame.select_option('select', label="Ellis County Clerk")
-        await page.wait_for_timeout(1000)
-
-        # Click Property button
-        await search_frame.click('input[value="Property"], button:has-text("Property")')
-        await page.wait_for_timeout(3000)
-
-        # Handle disclaimer popup — click Accept
+        # Try each frame
         for frame in page.frames:
             try:
-                content = await frame.content()
-                if "Accept" in content and "Decline" in content:
-                    log.info(f"  Found disclaimer in frame: {frame.url}")
-                    await frame.click('input[value="Accept"], button:has-text("Accept")')
-                    await page.wait_for_timeout(2000)
-                    break
+                await frame.wait_for_selector('select', timeout=2000)
+                log.info(f"  Found select in frame: {frame.url}")
+                await frame.select_option('select', label="Ellis County Clerk")
+                await page.wait_for_timeout(1000)
+
+                # Click Property
+                await frame.click('input[value="Property"], button:has-text("Property")')
+                await page.wait_for_timeout(3000)
+
+                # Handle disclaimer
+                for f2 in page.frames:
+                    try:
+                        if "Accept" in await f2.content():
+                            await f2.click('input[value="Accept"]')
+                            await page.wait_for_timeout(2000)
+                            break
+                    except Exception:
+                        pass
+
+                # Now look for search form in ALL frames
+                for f3 in page.frames:
+                    try:
+                        c3 = await f3.content()
+                        log.info(f"  Post-disclaimer frame {f3.url}: {len(c3)} chars has_select={'<select' in c3.lower()} snippet={c3[200:400]}")
+                    except Exception:
+                        pass
+
+                break
             except Exception:
                 continue
 
-        # Find the search form frame after disclaimer
-        search_frame = None
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                if "Record Type" in content or "Beginning Date" in content:
-                    search_frame = frame
-                    log.info(f"  Found search form frame: {frame.url}")
-                    break
-            except Exception:
-                continue
+        log.info(f"  {rec_type}: 0 rows (debug run)")
 
-        if not search_frame:
-            log.warning("  Could not find search form after disclaimer")
-            return records
+    except Exception as e:
+        log.warning(f"  Error scraping {rec_type}: {e}")
+
+    return records
 
         # Fill search form with correct field names
         await search_frame.fill('input[name="RecordType"], input[name="recordtype"]', rec_type)
