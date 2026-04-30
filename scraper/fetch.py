@@ -225,137 +225,19 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
     try:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(5000)
-
-        # Log all frames to find select
+        await page.screenshot(path="dashboard/debug_screenshot.png", full_page=True)
+        log.info("  Screenshot saved")
+        log.info(f"  Page URL: {page.url}")
+        log.info(f"  Page title: {await page.title()}")
         for frame in page.frames:
             try:
                 content = await frame.content()
-                if "<select" in content.lower():
-                    log.info(f"  SELECT in frame: {frame.url} len={len(content)}")
-                    log.info(f"  Snippet: {content[:300]}")
-            except Exception:
-                pass
-
-        # Find frame with select
-        select_frame = None
-        for frame in page.frames:
-            try:
-                await frame.wait_for_selector("select", timeout=2000)
-                select_frame = frame
-                log.info(f"  Found select frame: {frame.url}")
-                break
-            except Exception:
-                continue
-
-        if not select_frame:
-            log.warning(f"  {rec_type}: no select frame found")
-            return records
-
-        # Select Ellis County Clerk
-        await select_frame.select_option("select", label="Ellis County Clerk")
-        await page.wait_for_timeout(1000)
-
-        # Click Property
-        await select_frame.click('input[value="Property"], button:has-text("Property")')
-        await page.wait_for_timeout(3000)
-
-        # Handle disclaimer
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                if "Accept" in content and "Decline" in content:
-                    log.info(f"  Disclaimer in: {frame.url}")
-                    await frame.click('input[value="Accept"]')
-                    await page.wait_for_timeout(2000)
-                    break
-            except Exception:
-                continue
-
-        # Log all frames after disclaimer
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                log.info(f"  Post-disclaimer frame {frame.url}: {len(content)} chars snippet={content[100:300]}")
-            except Exception:
-                pass
-
-        # Find search form
-        search_frame = None
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                if "Record Type" in content or "Beginning Date" in content or "Instrument Number" in content:
-                    search_frame = frame
-                    log.info(f"  Search form in: {frame.url}")
-                    break
-            except Exception:
-                continue
-
-        if not search_frame:
-            log.warning(f"  {rec_type}: no search form found")
-            return records
-
-        # Fill form
-        inputs = await search_frame.query_selector_all("input[type=text], input:not([type])")
-        log.info(f"  Found {len(inputs)} inputs in search frame")
-        for inp in inputs:
-            name = await inp.get_attribute("name") or ""
-            placeholder = await inp.get_attribute("placeholder") or ""
-            log.info(f"  Input name={name} placeholder={placeholder}")
-
-        await search_frame.fill('input[name="RecordType"]', rec_type)
-        await search_frame.fill('input[name="BegDate"]', date_from)
-        await search_frame.fill('input[name="EndDate"]', date_to)
-
-        await search_frame.click('input[value="Search"]')
-        await page.wait_for_timeout(3000)
-
-        # Find results
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                if "Instrument" in content and len(content) > 500:
-                    rows = await frame.query_selector_all("table tr")
-                    for row in rows:
-                        cells = await row.query_selector_all("td")
-                        if len(cells) < 5:
-                            continue
-                        texts = [await c.inner_text() for c in cells]
-                        instrument = texts[0].strip()
-                        date_raw   = texts[1].strip()
-                        name       = texts[2].strip()
-                        name_type  = texts[3].strip()
-                        legal      = texts[5].strip() if len(texts) > 5 else ""
-                        if not instrument or not name:
-                            continue
-                        if name_type.upper() == "GRANTOR":
-                            grantor = name
-                            grantee = ""
-                        else:
-                            grantor = ""
-                            grantee = name
-                        records.append({
-                            "doc_num"  : instrument,
-                            "doc_type" : rec_type,
-                            "cat"      : cat,
-                            "cat_label": cat_label,
-                            "filed"    : parse_date(date_raw) or date_raw,
-                            "grantor"  : grantor,
-                            "grantee"  : grantee,
-                            "legal"    : legal,
-                            "amount"   : None,
-                            "clerk_url": BASE_URL,
-                            "_demo"    : False,
-                        })
-                    break
-            except Exception:
-                continue
-
-        log.info(f"  {rec_type}: {len(records)} rows")
-
+                log.info(f"  Frame {frame.url}: {len(content)} chars snippet={content[50:200]}")
+            except Exception as ex:
+                log.info(f"  Frame error: {ex}")
+        log.info(f"  {rec_type}: 0 rows (debug)")
     except Exception as e:
-        log.warning(f"  Error scraping {rec_type}: {e}")
-
+        log.warning(f"  Error: {e}")
     return records
 
 
