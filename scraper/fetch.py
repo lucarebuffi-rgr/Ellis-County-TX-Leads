@@ -258,20 +258,162 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
     records = []
     try:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
-        await page.wait_for_timeout(5000)
-        await page.screenshot(path="dashboard/debug_screenshot.png", full_page=True)
-        log.info("  Screenshot saved")
-        log.info(f"  Page URL: {page.url}")
-        log.info(f"  Page title: {await page.title()}")
+        await page.wait_for_timeout(3000)
+
+        # Find orslogo frame which has the search form
+        search_frame = None
+        for frame in page.frames:
+            try:
+                if "orslogo" in frame.url:
+                    search_frame = frame
+                    log.info(f"  Search frame: {frame.url}")
+                    break
+            except Exception:
+                continue
+
+        if not search_frame:
+            log.warning(f"  {rec_type}: orslogo frame not found")
+            return records
+
+        # Log what's in the frame
+        content = await search_frame.content()
+        log.info(f"  Frame content length: {len(content)}")
+        log.info(f"  Has select: {'<select' in content.lower()}")
+        log.info(f"  Has Ellis: {'Ellis' in content}")
+        log.info(f"  Content snippet: {content[:500]}")
+
+        # Try to select Ellis County Clerk
+        await search_frame.select_option("select", label="Ellis County Clerk")
+        await page.wait_for_timeout(1000)
+
+        # Click Property
+        await search_frame.click('input[value="Property"], button:has-text("Property")')
+        await page.wait_for_timeout(3000)
+
+        # Handle disclaimer
         for frame in page.frames:
             try:
                 content = await frame.content()
-                log.info(f"  Frame {frame.url}: {len(content)} chars snippet={content[50:200]}")
-            except Exception as ex:
-                log.info(f"  Frame error: {ex}")
-        log.info(f"  {rec_type}: 0 rows (debug)")
+                if "Accept" in content and "Decline" in content:
+                    log.info(f"  Disclaimer in: {frame.url}")
+                    await frame.evaluate("""
+                        () => {
+                            const els = document.querySelectorAll('input, button');
+                            for (const el of els) {
+                                if ((el.value || el.textContent || '').trim() === 'Accept') {
+                                    el.click();
+                                    return;
+                                }
+                            }
+                        }
+                    """)
+                    await page.wait_for_timeout(2000)
+                    break
+            except Exception:
+                continue
+
+        # Find search form — log all frames
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                log.info(f"  Frame {frame.url}: {len(content)} chars has_RecordType={'RecordType' in content} has_BegDate={'BegDate' in content} has_Beginning={'Beginning' in content}")
+            except Exception:
+                pass
+
+        # Find and fill search form
+        search_form_frame = None
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "RecordType" in content or "BegDate" in content or "Beginning" in content:
+                    search_form_frame = frame
+                    log.info(f"  Search form frame: {frame.url}")
+                    break
+            except Exception:
+                continue
+
+        if not search_form_frame:
+            log.warning(f"  {rec_type}: search form not found")
+            return records
+
+        # Log all inputs
+        inputs = await search_form_frame.query_selector_all("input")
+        for inp in inputs:
+            n = await inp.get_attribute("name") or ""
+            t = await inp.get_attribute("type") or ""
+            v = await inp.get_attribute("value") or ""
+            log.info(f"  Input name={n} type={t} value={v}")
+
+        # Fill by name
+        for inp in inputs:
+            n = (await inp.get_attribute("name") or "").lower()
+            if "record" in n:
+                await inp.fill(rec_type)
+            elif "beg" in n or "start" in n or "begin" in n:
+                await inp.fill(date_from)
+            elif "end" in n:
+                await inp.fill(date_to)
+
+        # Click Search
+        await search_form_frame.evaluate("""
+            () => {
+                const els = document.querySelectorAll('input, button');
+                for (const el of els) {
+                    if ((el.value || el.textContent || '').trim() === 'Search') {
+                        el.click();
+                        return;
+                    }
+                }
+            }
+        """)
+        await page.wait_for_timeout(3000)
+
+        # Find results
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "Instrument" in content and len(content) > 500:
+                    rows = await frame.query_selector_all("table tr")
+                    for row in rows:
+                        cells = await row.query_selector_all("td")
+                        if len(cells) < 5:
+                            continue
+                        texts = [await c.inner_text() for c in cells]
+                        instrument = texts[0].strip()
+                        date_raw   = texts[1].strip()
+                        name       = texts[2].strip()
+                        name_type  = texts[3].strip()
+                        legal      = texts[5].strip() if len(texts) > 5 else ""
+                        if not instrument or not name:
+                            continue
+                        if name_type.upper() == "GRANTOR":
+                            grantor = name
+                            grantee = ""
+                        else:
+                            grantor = ""
+                            grantee = name
+                        records.append({
+                            "doc_num"  : instrument,
+                            "doc_type" : rec_type,
+                            "cat"      : cat,
+                            "cat_label": cat_label,
+                            "filed"    : parse_date(date_raw) or date_raw,
+                            "grantor"  : grantor,
+                            "grantee"  : grantee,
+                            "legal"    : legal,
+                            "amount"   : None,
+                            "clerk_url": BASE_URL,
+                            "_demo"    : False,
+                        })
+                    break
+            except Exception:
+                continue
+
+        log.info(f"  {rec_type}: {len(records)} rows")
+
     except Exception as e:
-        log.warning(f"  Error: {e}")
+        log.warning(f"  Error scraping {rec_type}: {e}")
+
     return records
 
 
