@@ -201,50 +201,44 @@ async def lgs_login(page) -> bool:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
 
-        # Find Guest Login button across all frames
+        # Take screenshot before login
+        await page.screenshot(path="dashboard/before_login.png")
+
+        # Try clicking Guest Login by coordinates (it's roughly at center of page)
+        # The button appears to be around x=500, y=740 based on screenshot
+        viewport = page.viewport_size
+        log.info(f"  Viewport: {viewport}")
+
+        # Find the frame with Guest Login and get button position
         for frame in page.frames:
             try:
                 content = await frame.content()
                 if "Guest Login" in content:
-                    log.info(f"  Found Guest Login in: {frame.url}")
-                    # Try multiple click methods
-                    try:
-                        await frame.get_by_text("Guest Login").click()
-                        log.info("  Clicked via get_by_text")
-                    except Exception:
-                        try:
-                            await frame.click('input[value="Guest Login"]')
-                            log.info("  Clicked via input value")
-                        except Exception:
-                            try:
-                                await frame.evaluate("""
-                                    () => {
-                                        const els = document.querySelectorAll('input, button, a');
-                                        for (const el of els) {
-                                            if ((el.value || el.textContent || '').includes('Guest Login')) {
-                                                el.click();
-                                                return true;
-                                            }
-                                        }
-                                        return false;
-                                    }
-                                """)
-                                log.info("  Clicked via JavaScript")
-                            except Exception as ex3:
-                                log.info(f"  All click methods failed: {ex3}")
-
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(4000)
-
-                    # Take screenshot after login attempt
-                    await page.screenshot(path="dashboard/debug_screenshot.png", full_page=True)
-                    log.info(f"  After login URL: {page.url}")
-                    log.info("  Login attempt done")
-                    return True
-            except Exception:
+                    log.info(f"  Guest Login frame: {frame.url}")
+                    # Get the button element and click it
+                    btn = await frame.query_selector('input[value="Guest Login"]')
+                    if btn:
+                        box = await btn.bounding_box()
+                        log.info(f"  Button bounding box: {box}")
+                        if box:
+                            # Click using page coordinates
+                            await page.mouse.click(box["x"] + box["width"]/2,
+                                                   box["y"] + box["height"]/2)
+                            log.info("  Clicked Guest Login via mouse")
+                            await page.wait_for_load_state("networkidle")
+                            await page.wait_for_timeout(4000)
+                            await page.screenshot(path="dashboard/debug_screenshot.png", full_page=True)
+                            log.info(f"  After login URL: {page.url}")
+                            return True
+                        else:
+                            log.info("  Button has no bounding box — may be in iframe")
+                    else:
+                        log.info("  Button element not found in frame")
+            except Exception as ex:
+                log.info(f"  Frame error: {ex}")
                 continue
 
-        log.error("Guest Login not found in any frame")
+        log.error("Could not click Guest Login")
         return False
     except Exception as e:
         log.error(f"Login failed: {e}")
