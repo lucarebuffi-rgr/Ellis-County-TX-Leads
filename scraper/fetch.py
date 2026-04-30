@@ -201,44 +201,52 @@ async def lgs_login(page) -> bool:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
 
-        # Take screenshot before login
-        await page.screenshot(path="dashboard/before_login.png")
-
-        # Try clicking Guest Login by coordinates (it's roughly at center of page)
-        # The button appears to be around x=500, y=740 based on screenshot
-        viewport = page.viewport_size
-        log.info(f"  Viewport: {viewport}")
-
-        # Find the frame with Guest Login and get button position
         for frame in page.frames:
             try:
                 content = await frame.content()
                 if "Guest Login" in content:
                     log.info(f"  Guest Login frame: {frame.url}")
-                    # Get the button element and click it
-                    btn = await frame.query_selector('input[value="Guest Login"]')
-                    if btn:
-                        box = await btn.bounding_box()
-                        log.info(f"  Button bounding box: {box}")
-                        if box:
-                            # Click using page coordinates
-                            await page.mouse.click(box["x"] + box["width"]/2,
-                                                   box["y"] + box["height"]/2)
-                            log.info("  Clicked Guest Login via mouse")
-                            await page.wait_for_load_state("networkidle")
-                            await page.wait_for_timeout(4000)
-                            await page.screenshot(path="dashboard/debug_screenshot.png", full_page=True)
-                            log.info(f"  After login URL: {page.url}")
-                            return True
-                        else:
-                            log.info("  Button has no bounding box — may be in iframe")
-                    else:
-                        log.info("  Button element not found in frame")
+
+                    # Log all clickable elements
+                    elements = await frame.query_selector_all("input, button, a")
+                    for el in elements:
+                        tag  = await el.evaluate("el => el.tagName")
+                        val  = await el.evaluate("el => el.value || el.textContent || el.href || ''")
+                        typ  = await el.evaluate("el => el.type || ''")
+                        log.info(f"  Element: {tag} type={typ} value={val.strip()[:50]}")
+
+                    # Try clicking any element that says Guest Login
+                    clicked = await frame.evaluate("""
+                        () => {
+                            const all = document.querySelectorAll('*');
+                            for (const el of all) {
+                                const text = (el.value || el.textContent || '').trim();
+                                if (text === 'Guest Login') {
+                                    el.click();
+                                    return el.tagName + ':' + text;
+                                }
+                            }
+                            return 'not found';
+                        }
+                    """)
+                    log.info(f"  JS click result: {clicked}")
+                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_timeout(4000)
+                    log.info(f"  After login URL: {page.url}")
+
+                    # Log frames after login
+                    for f in page.frames:
+                        try:
+                            c = await f.content()
+                            log.info(f"  Post-login frame {f.url}: {len(c)} chars has_select={'<select' in c}")
+                        except Exception:
+                            pass
+                    return True
             except Exception as ex:
                 log.info(f"  Frame error: {ex}")
                 continue
 
-        log.error("Could not click Guest Login")
+        log.error("Guest Login not found")
         return False
     except Exception as e:
         log.error(f"Login failed: {e}")
