@@ -200,22 +200,11 @@ async def lgs_login(page) -> bool:
     try:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
-
         for frame in page.frames:
             try:
                 content = await frame.content()
                 if "Guest Login" in content:
                     log.info(f"  Guest Login frame: {frame.url}")
-
-                    # Log all clickable elements
-                    elements = await frame.query_selector_all("input, button, a")
-                    for el in elements:
-                        tag  = await el.evaluate("el => el.tagName")
-                        val  = await el.evaluate("el => el.value || el.textContent || el.href || ''")
-                        typ  = await el.evaluate("el => el.type || ''")
-                        log.info(f"  Element: {tag} type={typ} value={val.strip()[:50]}")
-
-                    # Try clicking any element that says Guest Login
                     clicked = await frame.evaluate("""
                         () => {
                             const all = document.querySelectorAll('*');
@@ -233,19 +222,9 @@ async def lgs_login(page) -> bool:
                     await page.wait_for_load_state("networkidle")
                     await page.wait_for_timeout(4000)
                     log.info(f"  After login URL: {page.url}")
-
-                    # Log frames after login
-                    for f in page.frames:
-                        try:
-                            c = await f.content()
-                            log.info(f"  Post-login frame {f.url}: {len(c)} chars has_select={'<select' in c}")
-                        except Exception:
-                            pass
                     return True
-            except Exception as ex:
-                log.info(f"  Frame error: {ex}")
+            except Exception:
                 continue
-
         log.error("Guest Login not found")
         return False
     except Exception as e:
@@ -257,163 +236,23 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
                           date_from: str, date_to: str) -> list:
     records = []
     try:
-        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
+        # Try navigating directly to the search CGI
+        search_url = "https://public.lgsonlinesolutions.com/cgi-bin/webshell.asp"
+        await page.goto(search_url, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
+        content = await page.content()
+        log.info(f"  Direct CGI content: {len(content)} chars snippet={content[:300]}")
 
-        # Find orslogo frame which has the search form
-        search_frame = None
-        for frame in page.frames:
-            try:
-                if "orslogo" in frame.url:
-                    search_frame = frame
-                    log.info(f"  Search frame: {frame.url}")
-                    break
-            except Exception:
-                continue
-
-        if not search_frame:
-            log.warning(f"  {rec_type}: orslogo frame not found")
-            return records
-
-        # Log what's in the frame
-        content = await search_frame.content()
-        log.info(f"  Frame content length: {len(content)}")
-        log.info(f"  Has select: {'<select' in content.lower()}")
-        log.info(f"  Has Ellis: {'Ellis' in content}")
-        log.info(f"  Content snippet: {content[:500]}")
-
-        # Try to select Ellis County Clerk
-        await search_frame.select_option("select", label="Ellis County Clerk")
-        await page.wait_for_timeout(1000)
-
-        # Click Property
-        await search_frame.click('input[value="Property"], button:has-text("Property")')
+        # Also try with parameters
+        search_url2 = "https://public.lgsonlinesolutions.com/cgi-bin/webshell.asp?office=Ellis+County+Clerk&filetype=Property"
+        await page.goto(search_url2, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
+        content2 = await page.content()
+        log.info(f"  CGI with params: {len(content2)} chars snippet={content2[:300]}")
 
-        # Handle disclaimer
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                if "Accept" in content and "Decline" in content:
-                    log.info(f"  Disclaimer in: {frame.url}")
-                    await frame.evaluate("""
-                        () => {
-                            const els = document.querySelectorAll('input, button');
-                            for (const el of els) {
-                                if ((el.value || el.textContent || '').trim() === 'Accept') {
-                                    el.click();
-                                    return;
-                                }
-                            }
-                        }
-                    """)
-                    await page.wait_for_timeout(2000)
-                    break
-            except Exception:
-                continue
-
-        # Find search form — log all frames
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                log.info(f"  Frame {frame.url}: {len(content)} chars has_RecordType={'RecordType' in content} has_BegDate={'BegDate' in content} has_Beginning={'Beginning' in content}")
-            except Exception:
-                pass
-
-        # Find and fill search form
-        search_form_frame = None
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                if "RecordType" in content or "BegDate" in content or "Beginning" in content:
-                    search_form_frame = frame
-                    log.info(f"  Search form frame: {frame.url}")
-                    break
-            except Exception:
-                continue
-
-        if not search_form_frame:
-            log.warning(f"  {rec_type}: search form not found")
-            return records
-
-        # Log all inputs
-        inputs = await search_form_frame.query_selector_all("input")
-        for inp in inputs:
-            n = await inp.get_attribute("name") or ""
-            t = await inp.get_attribute("type") or ""
-            v = await inp.get_attribute("value") or ""
-            log.info(f"  Input name={n} type={t} value={v}")
-
-        # Fill by name
-        for inp in inputs:
-            n = (await inp.get_attribute("name") or "").lower()
-            if "record" in n:
-                await inp.fill(rec_type)
-            elif "beg" in n or "start" in n or "begin" in n:
-                await inp.fill(date_from)
-            elif "end" in n:
-                await inp.fill(date_to)
-
-        # Click Search
-        await search_form_frame.evaluate("""
-            () => {
-                const els = document.querySelectorAll('input, button');
-                for (const el of els) {
-                    if ((el.value || el.textContent || '').trim() === 'Search') {
-                        el.click();
-                        return;
-                    }
-                }
-            }
-        """)
-        await page.wait_for_timeout(3000)
-
-        # Find results
-        for frame in page.frames:
-            try:
-                content = await frame.content()
-                if "Instrument" in content and len(content) > 500:
-                    rows = await frame.query_selector_all("table tr")
-                    for row in rows:
-                        cells = await row.query_selector_all("td")
-                        if len(cells) < 5:
-                            continue
-                        texts = [await c.inner_text() for c in cells]
-                        instrument = texts[0].strip()
-                        date_raw   = texts[1].strip()
-                        name       = texts[2].strip()
-                        name_type  = texts[3].strip()
-                        legal      = texts[5].strip() if len(texts) > 5 else ""
-                        if not instrument or not name:
-                            continue
-                        if name_type.upper() == "GRANTOR":
-                            grantor = name
-                            grantee = ""
-                        else:
-                            grantor = ""
-                            grantee = name
-                        records.append({
-                            "doc_num"  : instrument,
-                            "doc_type" : rec_type,
-                            "cat"      : cat,
-                            "cat_label": cat_label,
-                            "filed"    : parse_date(date_raw) or date_raw,
-                            "grantor"  : grantor,
-                            "grantee"  : grantee,
-                            "legal"    : legal,
-                            "amount"   : None,
-                            "clerk_url": BASE_URL,
-                            "_demo"    : False,
-                        })
-                    break
-            except Exception:
-                continue
-
-        log.info(f"  {rec_type}: {len(records)} rows")
-
+        log.info(f"  {rec_type}: 0 rows (debug)")
     except Exception as e:
-        log.warning(f"  Error scraping {rec_type}: {e}")
-
+        log.warning(f"  Error: {e}")
     return records
 
 
@@ -434,13 +273,12 @@ async def scrape_all(date_from: str, date_to: str) -> list:
             log.error("Could not log in — aborting")
             await browser.close()
             return []
-        for rec_type, (cat, cat_label) in DOC_TYPES.items():
-            try:
-                recs = await scrape_doc_type(page, rec_type, cat, cat_label,
-                                             date_from, date_to)
-                all_records.extend(recs)
-            except Exception as e:
-                log.warning(f"  Failed {rec_type}: {e}")
+        # Only run one doc type for debug
+        rec_type = "Lis Pendens"
+        cat, cat_label = "pre_foreclosure", "Lis Pendens"
+        recs = await scrape_doc_type(page, rec_type, cat, cat_label,
+                                     date_from, date_to)
+        all_records.extend(recs)
         await browser.close()
     return all_records
 
@@ -667,7 +505,7 @@ def export_ghl_csv(data: dict):
             "First Name":             parts[0] if parts else "",
             "Last Name":              " ".join(parts[1:]) if len(parts) > 1 else "",
             "Mailing Address":        r.get("mail_address", ""),
-            "Mailing City":           r.get("mail_city", ""),
+            "Milling City":           r.get("mail_city", ""),
             "Mailing State":          r.get("mail_state", "TX"),
             "Mailing Zip":            r.get("mail_zip", ""),
             "Property Address":       r.get("prop_address", ""),
