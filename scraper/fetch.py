@@ -71,7 +71,6 @@ ENTITY_FILTERS = (
     "CITY OF ENNIS", "CITY OF WAXAHACHIE"
 )
 
-# ── Fixed-width column positions ──────────────────────────────────────────────
 ACCT_S,  ACCT_E  = 596,  608
 NAME_S,  NAME_E  = 608,  658
 ADDR_S,  ADDR_E  = 693,  743
@@ -144,8 +143,6 @@ def is_entity(name: str) -> bool:
     return any(x in n for x in ENTITY_FILTERS)
 
 
-# ── CAD LOADER ────────────────────────────────────────────────────────────────
-
 def build_parcel_lookup() -> dict:
     lookup = {}
     log.info("Downloading Ellis CAD data via Google Drive ...")
@@ -153,20 +150,14 @@ def build_parcel_lookup() -> dict:
         tmp_path = "/tmp/ellis_cad.zip"
         url = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}&confirm=t"
         gdown.download(url=url, output=tmp_path, quiet=False)
-
-        zf    = zipfile.ZipFile(tmp_path)
-        fname = next(
-            (n for n in zf.namelist() if "APPRAISAL_INFO" in n.upper()),
-            None
-        )
+        zf = zipfile.ZipFile(tmp_path)
+        fname = next((n for n in zf.namelist() if "APPRAISAL_INFO" in n.upper()), None)
         if not fname:
             log.error("Could not find APPRAISAL_INFO.TXT in ZIP")
             return lookup
-
         log.info(f"  Parsing {fname} ...")
-        raw   = zf.read(fname).decode("latin-1")
+        raw = zf.read(fname).decode("latin-1")
         total = 0
-
         for line in raw.splitlines():
             if len(line) < PCLS_E:
                 continue
@@ -184,7 +175,6 @@ def build_parcel_lookup() -> dict:
             situs_st   = f"{situs_num} {line[SITUS_S:SITUS_E].strip()}".strip()
             situs_city = line[SCITY_S:SCITY_E].strip()
             situs_zip  = line[SZIP_S:SZIP_E].strip()[:5]
-
             parcel = {
                 "prop_address": situs_st,
                 "prop_city":    situs_city or "Waxahachie",
@@ -200,43 +190,28 @@ def build_parcel_lookup() -> dict:
             total += 1
             if total % 10000 == 0:
                 log.info(f"  Processed {total:,} parcels ...")
-
         log.info(f"Ellis CAD lookup: {len(lookup):,} name variants from {total:,} parcels")
     except Exception:
         log.error(f"CAD lookup error:\n{traceback.format_exc()}")
     return lookup
 
 
-# ── LOGIN ─────────────────────────────────────────────────────────────────────
-
 async def lgs_login(page) -> bool:
     try:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
-
-        # Try Guest Login instead — no credentials needed
         for frame in page.frames:
             try:
                 content = await frame.content()
-                if "Guest Login" in content or "Guest" in content:
+                if "Guest Login" in content:
                     log.info(f"  Found Guest Login in frame: {frame.url}")
                     await frame.click('input[value="Guest Login"], button:has-text("Guest Login")')
                     await page.wait_for_load_state("networkidle")
                     await page.wait_for_timeout(3000)
                     log.info("  Guest login complete")
-
-                    # Log post-login frames
-                    for f in page.frames:
-                        try:
-                            c = await f.content()
-                            log.info(f"  Frame {f.url}: {len(c)} chars has_select={'<select' in c} has_ellis={'Ellis' in c}")
-                        except Exception:
-                            pass
                     return True
-            except Exception as ex:
-                log.info(f"  Frame guest login attempt: {ex}")
+            except Exception:
                 continue
-
         log.error("Could not find Guest Login button")
         return False
     except Exception as e:
@@ -244,162 +219,137 @@ async def lgs_login(page) -> bool:
         return False
 
 
-# ── FRAME HELPER ──────────────────────────────────────────────────────────────
-
-async def get_search_frame(page):
-    """Find the frame that contains the search form."""
-    await page.wait_for_timeout(1000)
-    # Target the cgi-bin/webshell.asp frame which has the search form
-    for frame in page.frames:
-        try:
-            if "webshell" in frame.url or "cgi-bin" in frame.url:
-                log.info(f"  Using search frame: {frame.url}")
-                return frame
-        except Exception:
-            continue
-    # Fallback — find by select element
-    for frame in page.frames:
-        try:
-            content = await frame.content()
-            if "<select" in content:
-                log.info(f"  Fallback search frame: {frame.url}")
-                return frame
-        except Exception:
-            continue
-    return page.main_frame
-
-
-# ── SCRAPER ───────────────────────────────────────────────────────────────────
-
 async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
-                           date_from: str, date_to: str) -> list:
+                          date_from: str, date_to: str) -> list:
     records = []
     try:
-        # Navigate to main page
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(5000)
 
-        # Log ALL frames with full content snippet
+        # Log all frames to find select
         for frame in page.frames:
             try:
                 content = await frame.content()
-                # Look for select tag
                 if "<select" in content.lower():
-                    log.info(f"  SELECT found in frame: {frame.url}")
-                    log.info(f"  Content snippet: {content[:500]}")
+                    log.info(f"  SELECT in frame: {frame.url} len={len(content)}")
+                    log.info(f"  Snippet: {content[:300]}")
             except Exception:
                 pass
 
-        # Try clicking on the page directly using coordinates or text
-        # First try to find select on main page
-        try:
-            await page.wait_for_selector('select', timeout=5000)
-            log.info("  Found select on main page!")
-            await page.select_option('select', label="Ellis County Clerk")
-        except Exception:
-            log.warning("  No select on main page")
-
-        # Try each frame
+        # Find frame with select
+        select_frame = None
         for frame in page.frames:
             try:
-                await frame.wait_for_selector('select', timeout=2000)
-                log.info(f"  Found select in frame: {frame.url}")
-                await frame.select_option('select', label="Ellis County Clerk")
-                await page.wait_for_timeout(1000)
-
-                # Click Property
-                await frame.click('input[value="Property"], button:has-text("Property")')
-                await page.wait_for_timeout(3000)
-
-                # Handle disclaimer
-                for f2 in page.frames:
-                    try:
-                        if "Accept" in await f2.content():
-                            await f2.click('input[value="Accept"]')
-                            await page.wait_for_timeout(2000)
-                            break
-                    except Exception:
-                        pass
-
-                # Now look for search form in ALL frames
-                for f3 in page.frames:
-                    try:
-                        c3 = await f3.content()
-                        log.info(f"  Post-disclaimer frame {f3.url}: {len(c3)} chars has_select={'<select' in c3.lower()} snippet={c3[200:400]}")
-                    except Exception:
-                        pass
-
+                await frame.wait_for_selector("select", timeout=2000)
+                select_frame = frame
+                log.info(f"  Found select frame: {frame.url}")
                 break
             except Exception:
                 continue
 
-        log.info(f"  {rec_type}: 0 rows (debug run)")
+        if not select_frame:
+            log.warning(f"  {rec_type}: no select frame found")
+            return records
 
-    except Exception as e:
-        log.warning(f"  Error scraping {rec_type}: {e}")
+        # Select Ellis County Clerk
+        await select_frame.select_option("select", label="Ellis County Clerk")
+        await page.wait_for_timeout(1000)
 
-    return records
-
-        # Fill search form with correct field names
-        await search_frame.fill('input[name="RecordType"], input[name="recordtype"]', rec_type)
-        await search_frame.fill('input[name="BegDate"], input[name="begdate"], input[name="BeginningDate"]', date_from)
-        await search_frame.fill('input[name="EndDate"], input[name="enddate"], input[name="EndingDate"]', date_to)
-
-        # Click Search
-        await search_frame.click('input[value="Search"], button:has-text("Search")')
+        # Click Property
+        await select_frame.click('input[value="Property"], button:has-text("Property")')
         await page.wait_for_timeout(3000)
 
-        # Find results frame
-        results_frame = None
+        # Handle disclaimer
         for frame in page.frames:
             try:
                 content = await frame.content()
-                if "Instrument #" in content or "Instrument#" in content or "GRANTOR" in content or "GRANTEE" in content:
-                    results_frame = frame
-                    log.info(f"  Found results frame: {frame.url}")
+                if "Accept" in content and "Decline" in content:
+                    log.info(f"  Disclaimer in: {frame.url}")
+                    await frame.click('input[value="Accept"]')
+                    await page.wait_for_timeout(2000)
                     break
             except Exception:
                 continue
 
-        if not results_frame:
-            log.info(f"  {rec_type}: 0 rows (no results frame)")
+        # Log all frames after disclaimer
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                log.info(f"  Post-disclaimer frame {frame.url}: {len(content)} chars snippet={content[100:300]}")
+            except Exception:
+                pass
+
+        # Find search form
+        search_frame = None
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "Record Type" in content or "Beginning Date" in content or "Instrument Number" in content:
+                    search_frame = frame
+                    log.info(f"  Search form in: {frame.url}")
+                    break
+            except Exception:
+                continue
+
+        if not search_frame:
+            log.warning(f"  {rec_type}: no search form found")
             return records
 
-        rows = await results_frame.query_selector_all("table tr")
-        for row in rows:
-            cells = await row.query_selector_all("td")
-            if len(cells) < 5:
+        # Fill form
+        inputs = await search_frame.query_selector_all("input[type=text], input:not([type])")
+        log.info(f"  Found {len(inputs)} inputs in search frame")
+        for inp in inputs:
+            name = await inp.get_attribute("name") or ""
+            placeholder = await inp.get_attribute("placeholder") or ""
+            log.info(f"  Input name={name} placeholder={placeholder}")
+
+        await search_frame.fill('input[name="RecordType"]', rec_type)
+        await search_frame.fill('input[name="BegDate"]', date_from)
+        await search_frame.fill('input[name="EndDate"]', date_to)
+
+        await search_frame.click('input[value="Search"]')
+        await page.wait_for_timeout(3000)
+
+        # Find results
+        for frame in page.frames:
+            try:
+                content = await frame.content()
+                if "Instrument" in content and len(content) > 500:
+                    rows = await frame.query_selector_all("table tr")
+                    for row in rows:
+                        cells = await row.query_selector_all("td")
+                        if len(cells) < 5:
+                            continue
+                        texts = [await c.inner_text() for c in cells]
+                        instrument = texts[0].strip()
+                        date_raw   = texts[1].strip()
+                        name       = texts[2].strip()
+                        name_type  = texts[3].strip()
+                        legal      = texts[5].strip() if len(texts) > 5 else ""
+                        if not instrument or not name:
+                            continue
+                        if name_type.upper() == "GRANTOR":
+                            grantor = name
+                            grantee = ""
+                        else:
+                            grantor = ""
+                            grantee = name
+                        records.append({
+                            "doc_num"  : instrument,
+                            "doc_type" : rec_type,
+                            "cat"      : cat,
+                            "cat_label": cat_label,
+                            "filed"    : parse_date(date_raw) or date_raw,
+                            "grantor"  : grantor,
+                            "grantee"  : grantee,
+                            "legal"    : legal,
+                            "amount"   : None,
+                            "clerk_url": BASE_URL,
+                            "_demo"    : False,
+                        })
+                    break
+            except Exception:
                 continue
-            texts      = [await c.inner_text() for c in cells]
-            instrument = texts[0].strip()
-            date_raw   = texts[1].strip()
-            name       = texts[2].strip()
-            name_type  = texts[3].strip()
-            legal      = texts[5].strip() if len(texts) > 5 else ""
-
-            if not instrument or not name:
-                continue
-
-            if name_type.upper() == "GRANTOR":
-                grantor = name
-                grantee = ""
-            else:
-                grantor = ""
-                grantee = name
-
-            records.append({
-                "doc_num"  : instrument,
-                "doc_type" : rec_type,
-                "cat"      : cat,
-                "cat_label": cat_label,
-                "filed"    : parse_date(date_raw) or date_raw,
-                "grantor"  : grantor,
-                "grantee"  : grantee,
-                "legal"    : legal,
-                "amount"   : None,
-                "clerk_url": BASE_URL,
-                "_demo"    : False,
-            })
 
         log.info(f"  {rec_type}: {len(records)} rows")
 
@@ -413,7 +363,6 @@ async def scrape_all(date_from: str, date_to: str) -> list:
     if not HAS_PLAYWRIGHT:
         log.error("Playwright not available!")
         return []
-
     all_records = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -422,13 +371,11 @@ async def scrape_all(date_from: str, date_to: str) -> list:
                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
-
         logged_in = await lgs_login(page)
         if not logged_in:
             log.error("Could not log in — aborting")
             await browser.close()
             return []
-
         for rec_type, (cat, cat_label) in DOC_TYPES.items():
             try:
                 recs = await scrape_doc_type(page, rec_type, cat, cat_label,
@@ -436,13 +383,9 @@ async def scrape_all(date_from: str, date_to: str) -> list:
                 all_records.extend(recs)
             except Exception as e:
                 log.warning(f"  Failed {rec_type}: {e}")
-
         await browser.close()
-
     return all_records
 
-
-# ── DEMO DATA ─────────────────────────────────────────────────────────────────
 
 def generate_demo_records(date_from: str, date_to: str) -> list:
     samples = [
@@ -485,8 +428,6 @@ def generate_demo_records(date_from: str, date_to: str) -> list:
     return recs
 
 
-# ── ENRICHMENT ────────────────────────────────────────────────────────────────
-
 def enrich_with_parcel(records: list, lookup: dict) -> list:
     fuzzy_index = []
     seen = set()
@@ -496,14 +437,12 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
         if last and key not in seen:
             seen.add(key)
             fuzzy_index.append((last, firsts, parcel))
-
     matched = 0
     for rec in records:
         dtype  = rec.get("doc_type", "")
         owner  = (rec.get("grantee") if dtype in GRANTEE_IS_OWNER
                   else rec.get("grantor") or "").upper().strip()
         parcel = None
-
         if is_entity(owner):
             rec.setdefault("prop_address", "")
             rec.setdefault("prop_city",    "")
@@ -514,12 +453,10 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
             rec.setdefault("mail_state",   "TX")
             rec.setdefault("mail_zip",     "")
             continue
-
         for variant in name_variants(owner):
             parcel = lookup.get(variant)
             if parcel:
                 break
-
         if not parcel and owner:
             o_last, o_firsts = normalize_for_fuzzy(owner)
             if o_last and o_firsts:
@@ -537,7 +474,6 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
                             None, o_str, c_str).ratio() >= 0.85:
                         parcel = candidate
                         break
-
         if parcel:
             rec.update(parcel)
             matched += 1
@@ -550,19 +486,15 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
             rec.setdefault("mail_city",    "")
             rec.setdefault("mail_state",   "TX")
             rec.setdefault("mail_zip",     "")
-
     log.info(f"Parcel enrichment: {matched}/{len(records)} records matched")
     return records
 
-
-# ── SCORING ───────────────────────────────────────────────────────────────────
 
 def score_record(rec: dict) -> tuple:
     score = 30
     flags = []
     dtype  = rec.get("doc_type", "")
     amount = rec.get("amount") or 0
-
     if dtype == "Lis Pendens":               flags.append("Lis pendens")
     if dtype in ("Federal Tax",
                  "State Tax Lien"):          flags.append("Tax lien")
@@ -573,14 +505,12 @@ def score_record(rec: dict) -> tuple:
     if dtype == "Mechanic Lien":             flags.append("Mechanic lien")
     if dtype in ("Lien", "Hospital Lien"):  flags.append("Lien")
     if dtype == "Divorce Decree":            flags.append("Divorce")
-
     try:
         filed = datetime.strptime(rec.get("filed", ""), "%Y-%m-%d")
         if (datetime.today() - filed).days <= 14:
             flags.append("New this week")
     except Exception:
         pass
-
     has_addr = bool(rec.get("prop_address") or rec.get("mail_address"))
     score += 10 * len(flags)
     if "Lis pendens" in flags:      score += 20
@@ -593,8 +523,6 @@ def score_record(rec: dict) -> tuple:
     return min(score, 100), flags
 
 
-# ── OUTPUT ────────────────────────────────────────────────────────────────────
-
 def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
     seen_docs   = set()
     out_records = []
@@ -605,7 +533,6 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
                 continue
             if doc_num:
                 seen_docs.add(doc_num)
-
             dtype = raw.get("doc_type", "")
             if dtype in GRANTEE_IS_OWNER:
                 owner   = raw.get("grantee", "")
@@ -613,12 +540,9 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
             else:
                 owner   = raw.get("grantor", "")
                 grantee = raw.get("grantee", "")
-
             if not owner:
                 continue
-
             score, flags = score_record({**raw, "owner": owner})
-
             out_records.append({
                 "doc_num":      doc_num,
                 "doc_type":     dtype,
@@ -644,14 +568,12 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
             })
         except Exception:
             log.warning(f"Skipping: {traceback.format_exc()}")
-
     out_records = [r for r in out_records if not is_entity(r.get("owner", ""))]
     out_records = [r for r in out_records if not any(
         x in (r.get("owner", "")).upper() for x in ENTITY_FILTERS
     )]
     out_records.sort(key=lambda r: (-r["score"], r.get("filed", "") or ""))
     with_address = sum(1 for r in out_records if r["prop_address"] or r["mail_address"])
-
     return {
         "fetched_at":   datetime.utcnow().isoformat() + "Z",
         "source":       "Ellis County TX – LGS Online Solutions",
@@ -707,8 +629,6 @@ def export_ghl_csv(data: dict):
     Path("data/ghl_export.csv").write_text(buf.getvalue())
     log.info("GHL CSV saved")
 
-
-# ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async def main():
     today     = datetime.today()
