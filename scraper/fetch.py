@@ -201,36 +201,27 @@ async def lgs_login(page) -> bool:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
 
-        # Find the login frame and click Guest Login
         for frame in page.frames:
             try:
                 content = await frame.content()
-                if "Guest Login" in content:
-                    log.info(f"  Guest Login frame: {frame.url}")
-
-                    # Check what target the Guest Login button uses
-                    target_info = await frame.evaluate("""
-                        () => {
-                            const els = document.querySelectorAll('input, button, a, form');
-                            const info = [];
-                            els.forEach(el => {
-                                info.push({
-                                    tag: el.tagName,
-                                    type: el.type || '',
-                                    value: (el.value || el.textContent || '').trim().substring(0, 30),
-                                    target: el.target || '',
-                                    action: el.action || '',
-                                    onclick: (el.onclick || '').toString().substring(0, 100)
-                                });
-                            });
-                            return info;
-                        }
-                    """)
-                    log.info(f"  Form elements: {target_info}")
-                    break
-            except Exception:
+                if "GuestSubmit" in content:
+                    log.info(f"  Calling GuestSubmit() in: {frame.url}")
+                    await frame.evaluate("GuestSubmit()")
+                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_timeout(4000)
+                    menu_frame = page.frame(name="menu")
+                    if menu_frame:
+                        log.info(f"  Menu frame after GuestSubmit: {menu_frame.url}")
+                        c = await menu_frame.content()
+                        log.info(f"  Menu content: {len(c)} chars has_select={'<select' in c.lower()}")
+                    log.info("  Login complete")
+                    return True
+            except Exception as ex:
+                log.info(f"  Frame error: {ex}")
                 continue
-        return True
+
+        log.error("GuestSubmit not found")
+        return False
     except Exception as e:
         log.error(f"Login failed: {e}")
         return False
