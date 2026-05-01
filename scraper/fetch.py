@@ -200,33 +200,37 @@ async def lgs_login(page) -> bool:
     try:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(4000)
+
+        # Find the login frame and click Guest Login
         for frame in page.frames:
             try:
                 content = await frame.content()
                 if "Guest Login" in content:
                     log.info(f"  Guest Login frame: {frame.url}")
-                    clicked = await frame.evaluate("""
+
+                    # Check what target the Guest Login button uses
+                    target_info = await frame.evaluate("""
                         () => {
-                            const all = document.querySelectorAll('*');
-                            for (const el of all) {
-                                const text = (el.value || el.textContent || '').trim();
-                                if (text === 'Guest Login') {
-                                    el.click();
-                                    return el.tagName + ':' + text;
-                                }
-                            }
-                            return 'not found';
+                            const els = document.querySelectorAll('input, button, a, form');
+                            const info = [];
+                            els.forEach(el => {
+                                info.push({
+                                    tag: el.tagName,
+                                    type: el.type || '',
+                                    value: (el.value || el.textContent || '').trim().substring(0, 30),
+                                    target: el.target || '',
+                                    action: el.action || '',
+                                    onclick: (el.onclick || '').toString().substring(0, 100)
+                                });
+                            });
+                            return info;
                         }
                     """)
-                    log.info(f"  JS click result: {clicked}")
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(4000)
-                    log.info(f"  After login URL: {page.url}")
-                    return True
+                    log.info(f"  Form elements: {target_info}")
+                    break
             except Exception:
                 continue
-        log.error("Guest Login not found")
-        return False
+        return True
     except Exception as e:
         log.error(f"Login failed: {e}")
         return False
