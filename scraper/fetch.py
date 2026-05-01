@@ -239,44 +239,65 @@ async def scrape_doc_type(page, rec_type: str, cat: str, cat_label: str,
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
         await page.wait_for_timeout(3000)
 
-        # Use frame_locator to target the webshell frame
-        # The frameset has nested frames - try to find webshell.asp
-        webshell = page.frame_locator('frame[src*="webshell"]')
+        # Get the menu frame by name — this is where search form loads
+        menu_frame = page.frame(name="menu")
+        if not menu_frame:
+            log.warning("  menu frame not found")
+            return records
 
-        # If not found by src, try by name or position
-        # First log all frame sources
-        frames_html = await page.evaluate("""
-            () => {
-                const frames = document.querySelectorAll('frame, iframe');
-                return Array.from(frames).map(f => ({
-                    src: f.src,
-                    name: f.name,
-                    id: f.id
-                }));
-            }
-        """)
-        log.info(f"  Frames in DOM: {frames_html}")
+        log.info(f"  Menu frame URL: {menu_frame.url}")
+        content = await menu_frame.content()
+        log.info(f"  Menu frame content: {len(content)} chars has_select={'<select' in content.lower()}")
 
-        # Also check nested framesets
-        nested = await page.evaluate("""
+        # Select Ellis County Clerk
+        await menu_frame.select_option("select", label="Ellis County Clerk")
+        await page.wait_for_timeout(1000)
+
+        # Click Property
+        await menu_frame.evaluate("""
             () => {
-                const results = [];
-                function getFrames(doc, depth) {
-                    if (depth > 5) return;
-                    const frames = doc.querySelectorAll('frame, iframe');
-                    frames.forEach(f => {
-                        results.push({src: f.src, name: f.name, depth: depth});
-                        try {
-                            if (f.contentDocument) getFrames(f.contentDocument, depth+1);
-                        } catch(e) {}
-                    });
+                const els = document.querySelectorAll('input, button');
+                for (const el of els) {
+                    if ((el.value || el.textContent || '').trim() === 'Property') {
+                        el.click();
+                        return;
+                    }
                 }
-                getFrames(document, 0);
-                return results;
             }
         """)
-        log.info(f"  Nested frames: {nested}")
+        await page.wait_for_timeout(3000)
 
+        # Handle disclaimer in any frame
+        for frame in page.frames:
+            try:
+                c = await frame.content()
+                if "Accept" in c and "Decline" in c:
+                    log.info(f"  Disclaimer in: {frame.url}")
+                    await frame.evaluate("""
+                        () => {
+                            const els = document.querySelectorAll('input, button');
+                            for (const el of els) {
+                                if ((el.value || el.textContent || '').trim() === 'Accept') {
+                                    el.click();
+                                    return;
+                                }
+                            }
+                        }
+                    """)
+                    await page.wait_for_timeout(2000)
+                    break
+            except Exception:
+                continue
+
+        # Get menu frame again after navigation
+        menu_frame = page.frame(name="menu")
+        if menu_frame:
+            content = await menu_frame.content()
+            log.info(f"  Menu frame after Property: {len(content)} chars URL={menu_frame.url}")
+            log.info(f"  Has Record Type: {'Record Type' in content}")
+            log.info(f"  Has Beginning: {'Beginning' in content}")
+            log.info(f"  Snippet: {content[:500]}")
+        
         log.info(f"  {rec_type}: 0 rows (debug)")
     except Exception as e:
         log.warning(f"  Error: {e}")
